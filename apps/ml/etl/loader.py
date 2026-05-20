@@ -49,6 +49,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 BATCH_SIZE = 100   # Insert this many rows per Supabase API call
 DELAY_SEC  = 0.5   # Wait between batches to avoid rate-limiting
 PIPELINE_NAME = "janaushadhi"
+COMMERCIAL_PIPELINE_NAME = "commercial_mrp"
 FAILED_ROWS_DIR = Path(__file__).resolve().parents[3] / "data" / "failed" / PIPELINE_NAME
 RETRY_TABLE = "etl_failed_rows"
 SUCCESS_RATE_ALERT_THRESHOLD = 95.0
@@ -406,17 +407,73 @@ def load_processed_csv(csv_path: Path = None):
     """
     if csv_path is None:
         csv_path = Path(__file__).resolve().parents[3] / "data" / "processed" / "janaushadhi_processed.csv"
-    
+
     if not csv_path.exists():
         print(f"[Loader] ❌ Processed CSV not found at: {csv_path}")
         print("[Loader]    Run the normalizer first: python -m etl.normalizer")
         return
-    
+
     print(f"[Loader] Reading: {csv_path}")
     df = pd.read_csv(csv_path)
-    
+
     loader = SupabaseLoader()
     stats = loader.load(df)
+    return stats
+
+
+def load_commercial_mrp(commercial_csv_path: Path = None, janaushadhi_csv_path: Path = None):
+    """
+    Load commercial MRP data and merge with existing Jan Aushadhi data.
+
+    This function:
+    1. Reads processed Jan Aushadhi data (with base medicine info)
+    2. Reads processed commercial MRP data
+    3. Merges them to populate the mrp column
+    4. Loads the merged data into Supabase
+
+    Args:
+        commercial_csv_path: Path to commercial_mrp_processed.csv
+        janaushadhi_csv_path: Path to janaushadhi_processed.csv
+
+    Returns:
+        dict with load statistics
+    """
+    from .commercial_normalizer import CommercialMRPNormalizer
+
+    # Default paths
+    if commercial_csv_path is None:
+        commercial_csv_path = PROCESSED_DIR / "commercial_mrp_processed.csv"
+    if janaushadhi_csv_path is None:
+        janaushadhi_csv_path = PROCESSED_DIR / "janaushadhi_processed.csv"
+
+    if not commercial_csv_path.exists():
+        print(f"[Loader] ❌ Commercial CSV not found: {commercial_csv_path}")
+        print("[Loader]    Run: python -m scrapers.commercial_mrp && python -m etl.commercial_normalizer")
+        return None
+
+    if not janaushadhi_csv_path.exists():
+        print(f"[Loader] ❌ Jan Aushadhi CSV not found: {janaushadhi_csv_path}")
+        print("[Loader]    Run: python -m scrapers.janaushadhi && python -m etl.normalizer")
+        return None
+
+    print(f"[Loader] Reading commercial: {commercial_csv_path}")
+    commercial_df = pd.read_csv(commercial_csv_path)
+
+    print(f"[Loader] Reading Jan Aushadhi: {janaushadhi_csv_path}")
+    janaushadhi_df = pd.read_csv(janaushadhi_csv_path)
+
+    # Merge commercial MRP with Jan Aushadhi
+    normalizer = CommercialMRPNormalizer()
+    merged_df = normalizer.merge_with_janaushadhi(commercial_df, janaushadhi_df)
+
+    # Save merged output
+    merged_output = PROCESSED_DIR / "medicines_with_mrp.csv"
+    merged_df.to_csv(merged_output, index=False)
+    print(f"[Loader] ✅ Merged data saved to: {merged_output}")
+
+    # Load to Supabase
+    loader = SupabaseLoader()
+    stats = loader.load(merged_df)
     return stats
 
 
